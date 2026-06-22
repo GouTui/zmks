@@ -589,45 +589,25 @@ static int find_led_for_key_pos(uint8_t key_pos) {
 }
 
 #if FIXED_BREATHE_OVERLAY_ENABLED
-static int fixed_breathe_led_index(void) {
-#if FIXED_BREATHE_HAS_LED_INDEX
-    return FIXED_BREATHE_LED_INDEX;
-#else
-    return find_led_for_key_pos(FIXED_BREATHE_KEY_POS);
-#endif
-}
-
-static float fixed_breathe_pulse(float phase_01) {
-    float x = phase_01 * 2.0f;
-    if (x > 1.0f) {
-        x = 2.0f - x;
-    }
-    return 4.0f * x * (1.0f - x);
-}
+static const struct led_rgb fixed_test_pixels[] = {
+    {.r = 0xFF, .g = 0x00, .b = 0x00}, {.r = 0xFF, .g = 0x40, .b = 0x00},
+    {.r = 0xFF, .g = 0x80, .b = 0x00}, {.r = 0xFF, .g = 0xC0, .b = 0x00},
+    {.r = 0xFF, .g = 0xFF, .b = 0x00}, {.r = 0x80, .g = 0xFF, .b = 0x00},
+    {.r = 0x00, .g = 0xFF, .b = 0x00}, {.r = 0x00, .g = 0xFF, .b = 0x80},
+    {.r = 0x00, .g = 0xFF, .b = 0xFF}, {.r = 0x00, .g = 0x80, .b = 0xFF},
+    {.r = 0x00, .g = 0x00, .b = 0xFF}, {.r = 0x80, .g = 0x00, .b = 0xFF},
+    {.r = 0xFF, .g = 0x00, .b = 0xFF}, {.r = 0xFF, .g = 0x80, .b = 0xC0},
+    {.r = 0xFF, .g = 0xFF, .b = 0xFF},
+};
 
 static void zmk_rgb_underglow_apply_fixed_breathe_overlay(void) {
-    int led_idx = fixed_breathe_led_index();
-    if (led_idx < 0) {
-        return;
+    for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
+        pixels[i] = (struct led_rgb){.r = 0, .g = 0, .b = 0};
     }
 
-    uint32_t phase_ms = k_uptime_get_32() % FIXED_BREATHE_PERIOD_MS;
-    float phase = (float)phase_ms / (float)FIXED_BREATHE_PERIOD_MS;
-    float pulse = fixed_breathe_pulse(phase);
-    float brightness =
-        (float)FIXED_BREATHE_MIN_BRIGHTNESS +
-        ((float)(FIXED_BREATHE_MAX_BRIGHTNESS - FIXED_BREATHE_MIN_BRIGHTNESS) * pulse);
-
-    uint8_t scale = (uint8_t)(brightness + 0.5f);
-    uint8_t base_r = (FIXED_BREATHE_COLOR >> 16) & 0xFF;
-    uint8_t base_g = (FIXED_BREATHE_COLOR >> 8) & 0xFF;
-    uint8_t base_b = FIXED_BREATHE_COLOR & 0xFF;
-
-    pixels[led_idx] = (struct led_rgb){
-        .r = (uint8_t)(((uint16_t)base_r * scale) / 255),
-        .g = (uint8_t)(((uint16_t)base_g * scale) / 255),
-        .b = (uint8_t)(((uint16_t)base_b * scale) / 255),
-    };
+    for (int i = 0; i < ARRAY_SIZE(fixed_test_pixels) && i < STRIP_NUM_PIXELS; i++) {
+        pixels[i] = fixed_test_pixels[i];
+    }
 }
 #endif
 
