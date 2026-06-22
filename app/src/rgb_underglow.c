@@ -9,6 +9,7 @@
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/settings/settings.h>
+#include <zephyr/sys/util.h>
 
 #include <math.h>
 #include <stdlib.h>
@@ -93,6 +94,7 @@ static inline int effect_pixel_lookup(int led_idx) {
 #define HUE_MAX 360
 #define SAT_MAX 100
 #define BRT_MAX 100
+#define RGB_CHANNEL_STEP 16
 
 /* Animation FPS */
 #define ANIMATION_FPS 60
@@ -247,6 +249,39 @@ static struct led_rgb hsb_to_rgb(struct zmk_led_hsb hsb) {
 
     struct led_rgb rgb = {r : r * 255, g : g * 255, b : b * 255};
     return rgb;
+}
+
+static struct zmk_led_hsb rgb_to_hsb(struct led_rgb rgb, uint16_t fallback_hue) {
+    float r = rgb.r / 255.0f;
+    float g = rgb.g / 255.0f;
+    float b = rgb.b / 255.0f;
+    float max = MAX(r, MAX(g, b));
+    float min = MIN(r, MIN(g, b));
+    float delta = max - min;
+    float hue = fallback_hue % HUE_MAX;
+    float sat = 0.0f;
+
+    if (delta > 0.0001f) {
+        if (max == r) {
+            hue = 60.0f * fmodf(((g - b) / delta), 6.0f);
+        } else if (max == g) {
+            hue = 60.0f * (((b - r) / delta) + 2.0f);
+        } else {
+            hue = 60.0f * (((r - g) / delta) + 4.0f);
+        }
+
+        if (hue < 0.0f) {
+            hue += 360.0f;
+        }
+
+        sat = delta / max;
+    }
+
+    return (struct zmk_led_hsb){
+        .h = (uint16_t)lroundf(hue) % HUE_MAX,
+        .s = (uint8_t)CLAMP((int)lroundf(sat * SAT_MAX), 0, SAT_MAX),
+        .b = (uint8_t)CLAMP((int)lroundf(max * BRT_MAX), 0, BRT_MAX),
+    };
 }
 
 /* Convert user HSB to HSL for effects that use HSL internally */
@@ -589,25 +624,45 @@ static int find_led_for_key_pos(uint8_t key_pos) {
 }
 
 #if FIXED_BREATHE_OVERLAY_ENABLED
-static const struct led_rgb fixed_test_pixels[] = {
-    {.r = 0xFF, .g = 0x00, .b = 0x00}, {.r = 0xFF, .g = 0x40, .b = 0x00},
-    {.r = 0xFF, .g = 0x80, .b = 0x00}, {.r = 0xFF, .g = 0xC0, .b = 0x00},
-    {.r = 0xFF, .g = 0xFF, .b = 0x00}, {.r = 0x80, .g = 0xFF, .b = 0x00},
-    {.r = 0x00, .g = 0xFF, .b = 0x00}, {.r = 0x00, .g = 0xFF, .b = 0x80},
-    {.r = 0x00, .g = 0xFF, .b = 0xFF}, {.r = 0x00, .g = 0x80, .b = 0xFF},
-    {.r = 0x00, .g = 0x00, .b = 0xFF}, {.r = 0x80, .g = 0x00, .b = 0xFF},
-    {.r = 0xFF, .g = 0x00, .b = 0xFF}, {.r = 0xFF, .g = 0x80, .b = 0xC0},
-    {.r = 0xFF, .g = 0xFF, .b = 0xFF},
-};
+static int fixed_breathe_led_index(void) {
+#if FIXED_BREATHE_HAS_LED_INDEX
+    return FIXED_BREATHE_LED_INDEX;
+#else
+    return find_led_for_key_pos(FIXED_BREATHE_KEY_POS);
+#endif
+}
+
+static float fixed_breathe_pulse(float phase_01) {
+    float x = phase_01 * 2.0f;
+    if (x > 1.0f) {
+        x = 2.0f - x;
+    }
+    return 4.0f * x * (1.0f - x);
+}
 
 static void zmk_rgb_underglow_apply_fixed_breathe_overlay(void) {
-    for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
-        pixels[i] = (struct led_rgb){.r = 0, .g = 0, .b = 0};
+    int led_idx = fixed_breathe_led_index();
+    if (led_idx < 0) {
+        return;
     }
 
-    for (int i = 0; i < ARRAY_SIZE(fixed_test_pixels) && i < STRIP_NUM_PIXELS; i++) {
-        pixels[i] = fixed_test_pixels[i];
-    }
+    uint32_t phase_ms = k_uptime_get_32() % FIXED_BREATHE_PERIOD_MS;
+    float phase = (float)phase_ms / (float)FIXED_BREATHE_PERIOD_MS;
+    float pulse = fixed_breathe_pulse(phase);
+    float brightness =
+        (float)FIXED_BREATHE_MIN_BRIGHTNESS +
+        ((float)(FIXED_BREATHE_MAX_BRIGHTNESS - FIXED_BREATHE_MIN_BRIGHTNESS) * pulse);
+
+    uint8_t scale = (uint8_t)(brightness + 0.5f);
+    uint8_t base_r = (FIXED_BREATHE_COLOR >> 16) & 0xFF;
+    uint8_t base_g = (FIXED_BREATHE_COLOR >> 8) & 0xFF;
+    uint8_t base_b = FIXED_BREATHE_COLOR & 0xFF;
+
+    pixels[led_idx] = (struct led_rgb){
+        .r = (uint8_t)(((uint16_t)base_r * scale) / 255),
+        .g = (uint8_t)(((uint16_t)base_g * scale) / 255),
+        .b = (uint8_t)(((uint16_t)base_b * scale) / 255),
+    };
 }
 #endif
 
@@ -1038,6 +1093,28 @@ struct zmk_led_hsb zmk_rgb_underglow_calc_brt(int direction) {
     return color;
 }
 
+struct zmk_led_hsb zmk_rgb_underglow_calc_rgb_channel(int channel, int direction) {
+    struct led_rgb rgb = hsb_to_rgb(state.color);
+    uint8_t *component = NULL;
+
+    switch (channel) {
+    case 0:
+        component = &rgb.r;
+        break;
+    case 1:
+        component = &rgb.g;
+        break;
+    case 2:
+        component = &rgb.b;
+        break;
+    default:
+        return state.color;
+    }
+
+    *component = (uint8_t)CLAMP((int)(*component) + (direction * RGB_CHANNEL_STEP), 0, 255);
+    return rgb_to_hsb(rgb, state.color.h);
+}
+
 int zmk_rgb_underglow_change_hue(int direction) {
     if (!led_strip)
         return -ENODEV;
@@ -1056,6 +1133,13 @@ int zmk_rgb_underglow_change_brt(int direction) {
     if (!led_strip)
         return -ENODEV;
     state.color = zmk_rgb_underglow_calc_brt(direction);
+    return zmk_rgb_underglow_save_state();
+}
+
+int zmk_rgb_underglow_change_rgb_channel(int channel, int direction) {
+    if (!led_strip)
+        return -ENODEV;
+    state.color = zmk_rgb_underglow_calc_rgb_channel(channel, direction);
     return zmk_rgb_underglow_save_state();
 }
 

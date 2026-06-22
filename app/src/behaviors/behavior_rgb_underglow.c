@@ -86,6 +86,36 @@ static const struct behavior_parameter_value_metadata no_arg_values[] = {
         .type = BEHAVIOR_PARAMETER_VALUE_TYPE_VALUE,
         .value = RGB_EFR_CMD,
     },
+    {
+        .display_name = "Red Up",
+        .type = BEHAVIOR_PARAMETER_VALUE_TYPE_VALUE,
+        .value = RGB_RI_CMD,
+    },
+    {
+        .display_name = "Red Down",
+        .type = BEHAVIOR_PARAMETER_VALUE_TYPE_VALUE,
+        .value = RGB_RD_CMD,
+    },
+    {
+        .display_name = "Green Up",
+        .type = BEHAVIOR_PARAMETER_VALUE_TYPE_VALUE,
+        .value = RGB_GI_CMD,
+    },
+    {
+        .display_name = "Green Down",
+        .type = BEHAVIOR_PARAMETER_VALUE_TYPE_VALUE,
+        .value = RGB_GD_CMD,
+    },
+    {
+        .display_name = "Blue Up",
+        .type = BEHAVIOR_PARAMETER_VALUE_TYPE_VALUE,
+        .value = RGB_BI_CMD,
+    },
+    {
+        .display_name = "Blue Down",
+        .type = BEHAVIOR_PARAMETER_VALUE_TYPE_VALUE,
+        .value = RGB_BD_CMD,
+    },
 };
 
 static const struct behavior_parameter_metadata_set no_args_set = {
@@ -156,6 +186,47 @@ on_keymap_binding_convert_central_state_dependent_params(struct zmk_behavior_bin
     case RGB_BRD_CMD: {
         struct zmk_led_hsb color = zmk_rgb_underglow_calc_brt(-1);
 
+        binding->param1 = RGB_COLOR_HSB_CMD;
+        binding->param2 = RGB_COLOR_HSB_VAL(color.h, color.s, color.b);
+        break;
+    }
+    case RGB_RI_CMD:
+    case RGB_RD_CMD:
+    case RGB_GI_CMD:
+    case RGB_GD_CMD:
+    case RGB_BI_CMD:
+    case RGB_BD_CMD: {
+        int channel = 0;
+        int direction = 1;
+
+        switch (binding->param1) {
+        case RGB_RI_CMD:
+            channel = 0;
+            direction = 1;
+            break;
+        case RGB_RD_CMD:
+            channel = 0;
+            direction = -1;
+            break;
+        case RGB_GI_CMD:
+            channel = 1;
+            direction = 1;
+            break;
+        case RGB_GD_CMD:
+            channel = 1;
+            direction = -1;
+            break;
+        case RGB_BI_CMD:
+            channel = 2;
+            direction = 1;
+            break;
+        case RGB_BD_CMD:
+            channel = 2;
+            direction = -1;
+            break;
+        }
+
+        struct zmk_led_hsb color = zmk_rgb_underglow_calc_rgb_channel(channel, direction);
         binding->param1 = RGB_COLOR_HSB_CMD;
         binding->param2 = RGB_COLOR_HSB_VAL(color.h, color.s, color.b);
         break;
@@ -232,6 +303,18 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
         return zmk_rgb_underglow_change_spd(1);
     case RGB_SPD_CMD:
         return zmk_rgb_underglow_change_spd(-1);
+    case RGB_RI_CMD:
+        return zmk_rgb_underglow_change_rgb_channel(0, 1);
+    case RGB_RD_CMD:
+        return zmk_rgb_underglow_change_rgb_channel(0, -1);
+    case RGB_GI_CMD:
+        return zmk_rgb_underglow_change_rgb_channel(1, 1);
+    case RGB_GD_CMD:
+        return zmk_rgb_underglow_change_rgb_channel(1, -1);
+    case RGB_BI_CMD:
+        return zmk_rgb_underglow_change_rgb_channel(2, 1);
+    case RGB_BD_CMD:
+        return zmk_rgb_underglow_change_rgb_channel(2, -1);
     case RGB_EFS_CMD:
         return zmk_rgb_underglow_select_effect(binding->param2);
     case RGB_EFF_CMD:
