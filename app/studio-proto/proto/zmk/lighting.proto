@@ -116,6 +116,7 @@ message LowBatteryIndicatorState {
     uint32 period_ms = 4;
     uint32 threshold_pct = 5;
     uint32 flash_duration_ms = 6;
+    bool demo_enabled = 7;
 }
 
 message SetLowBatteryIndicatorRequest {
@@ -123,6 +124,10 @@ message SetLowBatteryIndicatorRequest {
         bool enabled = 1;
         uint32 key_position = 2;
         uint32 period_ms = 3;
+        uint32 color = 4;               // 0xRRGGBB
+        uint32 threshold_pct = 5;
+        uint32 flash_duration_ms = 6;
+        bool demo_enabled = 7;
     }
 }
 

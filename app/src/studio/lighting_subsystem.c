@@ -148,6 +148,7 @@ static zmk_studio_Response get_low_battery_indicator(const zmk_studio_Request *r
     resp.period_ms = state.period_ms;
     resp.threshold_pct = state.threshold_pct;
     resp.flash_duration_ms = state.flash_duration_ms;
+    resp.demo_enabled = state.demo_enabled;
 
     return LIGHTING_RESPONSE(get_low_battery_indicator, resp);
 }
@@ -168,6 +169,18 @@ static zmk_studio_Response set_low_battery_indicator(const zmk_studio_Request *r
         break;
     case zmk_lighting_SetLowBatteryIndicatorRequest_period_ms_tag:
         ret = zmk_rgb_low_battery_indicator_set_period_ms(set_req->field.period_ms);
+        break;
+    case zmk_lighting_SetLowBatteryIndicatorRequest_color_tag:
+        ret = zmk_rgb_low_battery_indicator_set_color(set_req->field.color);
+        break;
+    case zmk_lighting_SetLowBatteryIndicatorRequest_threshold_pct_tag:
+        ret = zmk_rgb_low_battery_indicator_set_threshold_pct(set_req->field.threshold_pct);
+        break;
+    case zmk_lighting_SetLowBatteryIndicatorRequest_flash_duration_ms_tag:
+        ret = zmk_rgb_low_battery_indicator_set_flash_duration_ms(set_req->field.flash_duration_ms);
+        break;
+    case zmk_lighting_SetLowBatteryIndicatorRequest_demo_enabled_tag:
+        ret = zmk_rgb_low_battery_indicator_set_demo_enabled(set_req->field.demo_enabled);
         break;
     default:
         return ZMK_RPC_SIMPLE_ERR(GENERIC);

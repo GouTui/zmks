@@ -331,6 +331,7 @@ static struct zmk_rgb_low_battery_indicator_state low_battery_indicator = {
     .period_ms = LOW_BATTERY_INDICATOR_DEFAULT_PERIOD_MS,
     .threshold_pct = LOW_BATTERY_INDICATOR_DEFAULT_THRESHOLD_PCT,
     .flash_duration_ms = LOW_BATTERY_INDICATOR_DEFAULT_FLASH_DURATION_MS,
+    .demo_enabled = false,
 };
 static bool low_battery_state_known;
 
@@ -622,8 +623,15 @@ static struct led_rgb solid_rgb_overlay(uint32_t color) {
 }
 
 static bool low_battery_overlay_requested(void) {
-    return low_battery_indicator.enabled && low_battery_state_known &&
-           zmk_battery_state_of_charge() <= low_battery_indicator.threshold_pct;
+    if (!low_battery_indicator.enabled) {
+        return false;
+    }
+
+    if (low_battery_indicator.demo_enabled) {
+        return true;
+    }
+
+    return low_battery_state_known && zmk_battery_state_of_charge() <= low_battery_indicator.threshold_pct;
 }
 
 static bool low_battery_flash_visible(void) {
@@ -802,7 +810,7 @@ static void zmk_rgb_underglow_save_state_work(struct k_work *_work) {
 
 static struct k_work_delayable underglow_save_work;
 
-struct low_battery_indicator_settings_data {
+struct low_battery_indicator_settings_data_v1 {
     bool enabled;
     uint32_t color;
     uint8_t key_pos;
@@ -811,31 +819,58 @@ struct low_battery_indicator_settings_data {
     uint16_t flash_duration_ms;
 } __packed;
 
+struct low_battery_indicator_settings_data {
+    bool enabled;
+    uint32_t color;
+    uint8_t key_pos;
+    uint32_t period_ms;
+    uint8_t threshold_pct;
+    uint16_t flash_duration_ms;
+    uint8_t demo_enabled;
+} __packed;
+
 static int low_battery_indicator_settings_set(const char *name, size_t len, settings_read_cb read_cb,
                                               void *cb_arg) {
     const char *next;
 
     if (settings_name_steq(name, "state", &next) && !next) {
         struct low_battery_indicator_settings_data data = {0};
-        if (len != sizeof(data)) {
+        if (len == sizeof(data)) {
+            int rc = read_cb(cb_arg, &data, sizeof(data));
+            if (rc < 0) {
+                return rc;
+            }
+        } else if (len == sizeof(struct low_battery_indicator_settings_data_v1)) {
+            struct low_battery_indicator_settings_data_v1 old_data = {0};
+            int rc = read_cb(cb_arg, &old_data, sizeof(old_data));
+            if (rc < 0) {
+                return rc;
+            }
+
+            data.enabled = old_data.enabled;
+            data.color = old_data.color;
+            data.key_pos = old_data.key_pos;
+            data.period_ms = old_data.period_ms;
+            data.threshold_pct = old_data.threshold_pct;
+            data.flash_duration_ms = old_data.flash_duration_ms;
+            data.demo_enabled = 0;
+        } else {
             return -EINVAL;
         }
 
-        int rc = read_cb(cb_arg, &data, sizeof(data));
-        if (rc < 0) {
-            return rc;
-        }
-
         low_battery_indicator.enabled = data.enabled;
-        low_battery_indicator.color = data.color ? data.color : LOW_BATTERY_INDICATOR_DEFAULT_COLOR;
+        low_battery_indicator.color = data.color;
         low_battery_indicator.key_pos = data.key_pos;
         low_battery_indicator.period_ms =
             data.period_ms ? data.period_ms : LOW_BATTERY_INDICATOR_DEFAULT_PERIOD_MS;
         low_battery_indicator.threshold_pct =
-            data.threshold_pct ? data.threshold_pct : LOW_BATTERY_INDICATOR_DEFAULT_THRESHOLD_PCT;
+            (data.threshold_pct > 0 && data.threshold_pct <= 100)
+                ? data.threshold_pct
+                : LOW_BATTERY_INDICATOR_DEFAULT_THRESHOLD_PCT;
         low_battery_indicator.flash_duration_ms =
             data.flash_duration_ms ? data.flash_duration_ms
                                    : LOW_BATTERY_INDICATOR_DEFAULT_FLASH_DURATION_MS;
+        low_battery_indicator.demo_enabled = data.demo_enabled != 0;
         return 0;
     }
 
@@ -989,6 +1024,38 @@ int zmk_rgb_low_battery_indicator_set_period_ms(uint32_t period_ms) {
     return 0;
 }
 
+int zmk_rgb_low_battery_indicator_set_color(uint32_t color) {
+    low_battery_indicator.color = color & 0xFFFFFF;
+    zmk_rgb_underglow_sync_output_state(true);
+    return 0;
+}
+
+int zmk_rgb_low_battery_indicator_set_threshold_pct(uint32_t threshold_pct) {
+    if (threshold_pct == 0 || threshold_pct > 100) {
+        return -EINVAL;
+    }
+
+    low_battery_indicator.threshold_pct = (uint8_t)threshold_pct;
+    zmk_rgb_underglow_sync_output_state(true);
+    return 0;
+}
+
+int zmk_rgb_low_battery_indicator_set_flash_duration_ms(uint32_t flash_duration_ms) {
+    if (flash_duration_ms == 0 || flash_duration_ms > UINT16_MAX) {
+        return -EINVAL;
+    }
+
+    low_battery_indicator.flash_duration_ms = (uint16_t)flash_duration_ms;
+    zmk_rgb_underglow_sync_output_state(true);
+    return 0;
+}
+
+int zmk_rgb_low_battery_indicator_set_demo_enabled(bool demo_enabled) {
+    low_battery_indicator.demo_enabled = demo_enabled;
+    zmk_rgb_underglow_sync_output_state(true);
+    return 0;
+}
+
 int zmk_rgb_low_battery_indicator_save(void) {
 #if IS_ENABLED(CONFIG_SETTINGS)
     struct low_battery_indicator_settings_data data = {
@@ -998,6 +1065,7 @@ int zmk_rgb_low_battery_indicator_save(void) {
         .period_ms = low_battery_indicator.period_ms,
         .threshold_pct = low_battery_indicator.threshold_pct,
         .flash_duration_ms = low_battery_indicator.flash_duration_ms,
+        .demo_enabled = low_battery_indicator.demo_enabled ? 1 : 0,
     };
     return settings_save_one("rgb/low_battery/state", &data, sizeof(data));
 #else
@@ -1013,6 +1081,7 @@ int zmk_rgb_low_battery_indicator_settings_reset(void) {
         .period_ms = LOW_BATTERY_INDICATOR_DEFAULT_PERIOD_MS,
         .threshold_pct = LOW_BATTERY_INDICATOR_DEFAULT_THRESHOLD_PCT,
         .flash_duration_ms = LOW_BATTERY_INDICATOR_DEFAULT_FLASH_DURATION_MS,
+        .demo_enabled = false,
     };
 
 #if IS_ENABLED(CONFIG_SETTINGS)

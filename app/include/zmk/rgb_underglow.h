@@ -22,6 +22,7 @@ struct zmk_rgb_low_battery_indicator_state {
     uint32_t period_ms;
     uint8_t threshold_pct;
     uint16_t flash_duration_ms;
+    bool demo_enabled;
 };
 
 int zmk_rgb_underglow_toggle(void);
@@ -54,5 +55,9 @@ int zmk_rgb_low_battery_indicator_get_state(struct zmk_rgb_low_battery_indicator
 int zmk_rgb_low_battery_indicator_set_enabled(bool enabled);
 int zmk_rgb_low_battery_indicator_set_key_pos(uint8_t key_pos);
 int zmk_rgb_low_battery_indicator_set_period_ms(uint32_t period_ms);
+int zmk_rgb_low_battery_indicator_set_color(uint32_t color);
+int zmk_rgb_low_battery_indicator_set_threshold_pct(uint32_t threshold_pct);
+int zmk_rgb_low_battery_indicator_set_flash_duration_ms(uint32_t flash_duration_ms);
+int zmk_rgb_low_battery_indicator_set_demo_enabled(bool demo_enabled);
 int zmk_rgb_low_battery_indicator_save(void);
 int zmk_rgb_low_battery_indicator_settings_reset(void);
