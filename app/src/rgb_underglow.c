@@ -74,6 +74,7 @@ static inline int effect_pixel_lookup(int led_idx) {
 #define LOW_BATTERY_INDICATOR_DEFAULT_THRESHOLD_PCT 20
 #define LOW_BATTERY_INDICATOR_DEFAULT_FLASH_DURATION_MS 200
 #define BATTERY_LEVEL_DISPLAY_DEFAULT_DURATION_MS 1200
+#define BATTERY_LEVEL_DISPLAY_DEBOUNCE_MS 150
 #define BATTERY_LEVEL_DISPLAY_ZERO_KEY_POS 10
 
 /* Animation FPS */
@@ -350,6 +351,7 @@ static struct {
     .started_at_ms = 0,
     .duration_ms = BATTERY_LEVEL_DISPLAY_DEFAULT_DURATION_MS,
 };
+static uint32_t battery_level_display_last_triggered_at_ms;
 static bool low_battery_state_known;
 
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_EXT_POWER)
@@ -1185,14 +1187,21 @@ int zmk_rgb_underglow_show_battery_level(void) {
         return -ENODEV;
     }
 
+    uint32_t now_ms = k_uptime_get_32();
+    if ((uint32_t)(now_ms - battery_level_display_last_triggered_at_ms) <
+        BATTERY_LEVEL_DISPLAY_DEBOUNCE_MS) {
+        return 0;
+    }
+
     uint8_t battery_pct = MIN(zmk_battery_state_of_charge(), (uint8_t)100);
 
     battery_level_display.active = true;
     battery_level_display.percent = battery_pct;
     battery_level_display.key_pos = battery_level_display_key_pos_for_pct(battery_pct);
     battery_level_display.color = battery_level_display_color_for_pct(battery_pct);
-    battery_level_display.started_at_ms = k_uptime_get_32();
+    battery_level_display.started_at_ms = now_ms;
     battery_level_display.duration_ms = BATTERY_LEVEL_DISPLAY_DEFAULT_DURATION_MS;
+    battery_level_display_last_triggered_at_ms = now_ms;
 
     zmk_rgb_underglow_sync_output_state(true);
     return 0;
