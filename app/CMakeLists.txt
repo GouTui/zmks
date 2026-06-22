@@ -130,8 +130,8 @@ if (CONFIG_ZMK_STUDIO_RPC)
 
   include(nanopb)
 
-  if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/studio-proto/zmk/studio.proto)
-    set(ZMK_STUDIO_PROTO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/studio-proto/zmk)
+  if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/studio-proto/proto/zmk/studio.proto)
+    set(ZMK_STUDIO_PROTO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/studio-proto/proto/zmk)
     set(ZMK_STUDIO_PROTO_RELPATH ${CMAKE_CURRENT_SOURCE_DIR}/studio-proto)
   else()
     set(ZMK_STUDIO_PROTO_DIR ${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR}/proto/zmk)
