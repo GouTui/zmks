@@ -1,0 +1,41 @@
+description: |
+  Applies a persistent breathing overlay to a single key LED after the
+  normal RGB underglow effect, layer overlay, and status indicators.
+  This overlay can remain active even when the regular underglow is turned off.
+
+compatible: "zmk,underglow-fixed-breathe-key"
+
+properties:
+  key-pos:
+    type: int
+    required: true
+    description: |
+      Logical key position to target.
+
+  color:
+    type: int
+    required: false
+    default: 0xFFFFFF
+    description: |
+      RGB color encoded as 0xRRGGBB.
+
+  period-ms:
+    type: int
+    required: false
+    default: 2200
+    description: |
+      Full breathing cycle duration in milliseconds.
+
+  min-brightness:
+    type: int
+    required: false
+    default: 0
+    description: |
+      Minimum brightness as an 8-bit value from 0 to 255.
+
+  max-brightness:
+    type: int
+    required: false
+    default: 48
+    description: |
+      Maximum brightness as an 8-bit value from 0 to 255.

@@ -53,6 +53,25 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define UNDERGLOW_LAYER_ENABLED 1
 #endif
 
+#if DT_HAS_COMPAT_STATUS_OKAY(zmk_underglow_fixed_breathe_key)
+#define FIXED_BREATHE_OVERLAY_ENABLED 1
+#define FIXED_BREATHE_NODE DT_INST(0, zmk_underglow_fixed_breathe_key)
+#define FIXED_BREATHE_KEY_POS DT_PROP(FIXED_BREATHE_NODE, key_pos)
+#define FIXED_BREATHE_COLOR DT_PROP(FIXED_BREATHE_NODE, color)
+#define FIXED_BREATHE_PERIOD_MS DT_PROP(FIXED_BREATHE_NODE, period_ms)
+#define FIXED_BREATHE_MIN_BRIGHTNESS DT_PROP(FIXED_BREATHE_NODE, min_brightness)
+#define FIXED_BREATHE_MAX_BRIGHTNESS DT_PROP(FIXED_BREATHE_NODE, max_brightness)
+
+BUILD_ASSERT(FIXED_BREATHE_PERIOD_MS > 0,
+             "zmk,underglow-fixed-breathe-key period-ms must be greater than 0");
+BUILD_ASSERT(FIXED_BREATHE_MIN_BRIGHTNESS <= FIXED_BREATHE_MAX_BRIGHTNESS,
+             "zmk,underglow-fixed-breathe-key min-brightness must not exceed max-brightness");
+BUILD_ASSERT(FIXED_BREATHE_MAX_BRIGHTNESS <= 255,
+             "zmk,underglow-fixed-breathe-key max-brightness must be <= 255");
+#else
+#define FIXED_BREATHE_OVERLAY_ENABLED 0
+#endif
+
 static inline int effect_pixel_lookup(int led_idx) {
 #if IS_ENABLED(UNDERGLOW_LAYER_ENABLED)
     return rgb_pixel_lookup(led_idx);
@@ -286,6 +305,10 @@ static struct rgb_underglow_state state;
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_EXT_POWER)
 static const struct device *const ext_power = DEVICE_DT_GET(DT_INST(0, zmk_ext_power_generic));
 #endif
+
+static inline bool underglow_output_required(void) {
+    return state.on || FIXED_BREATHE_OVERLAY_ENABLED;
+}
 
 /* Get the brightness factor from user state (0.0 ~ 1.0) */
 static float get_brightness_factor(void) {
@@ -555,6 +578,41 @@ static int find_led_for_key_pos(uint8_t key_pos) {
     return -1;
 }
 
+#if FIXED_BREATHE_OVERLAY_ENABLED
+static float fixed_breathe_pulse(float phase_01) {
+    float x = phase_01 * 2.0f;
+    if (x > 1.0f) {
+        x = 2.0f - x;
+    }
+    return 4.0f * x * (1.0f - x);
+}
+
+static void zmk_rgb_underglow_apply_fixed_breathe_overlay(void) {
+    int led_idx = find_led_for_key_pos(FIXED_BREATHE_KEY_POS);
+    if (led_idx < 0) {
+        return;
+    }
+
+    uint32_t phase_ms = k_uptime_get_32() % FIXED_BREATHE_PERIOD_MS;
+    float phase = (float)phase_ms / (float)FIXED_BREATHE_PERIOD_MS;
+    float pulse = fixed_breathe_pulse(phase);
+    float brightness =
+        (float)FIXED_BREATHE_MIN_BRIGHTNESS +
+        ((float)(FIXED_BREATHE_MAX_BRIGHTNESS - FIXED_BREATHE_MIN_BRIGHTNESS) * pulse);
+
+    uint8_t scale = (uint8_t)(brightness + 0.5f);
+    uint8_t base_r = (FIXED_BREATHE_COLOR >> 16) & 0xFF;
+    uint8_t base_g = (FIXED_BREATHE_COLOR >> 8) & 0xFF;
+    uint8_t base_b = FIXED_BREATHE_COLOR & 0xFF;
+
+    pixels[led_idx] = (struct led_rgb){
+        .r = (uint8_t)(((uint16_t)base_r * scale) / 255),
+        .g = (uint8_t)(((uint16_t)base_g * scale) / 255),
+        .b = (uint8_t)(((uint16_t)base_b * scale) / 255),
+    };
+}
+#endif
+
 static void zmk_rgb_underglow_apply_status_overlay(uint8_t top_layer) {
     uint8_t key_pos;
     uint32_t color;
@@ -621,28 +679,38 @@ static void zmk_rgb_underglow_apply_layer_overlay(void) {
 /* ========================================================================= */
 
 static void zmk_rgb_underglow_tick(struct k_work *work) {
-    const struct rgb_effect_desc *eff = &effect_table[state.current_effect];
+    if (state.on) {
+        const struct rgb_effect_desc *eff = &effect_table[state.current_effect];
 
-    /* Drain any pending keypress events */
-    struct effect_event ev;
-    while (k_msgq_get(&effect_event_msgq, &ev, K_NO_WAIT) == 0) {
-        if (eff->on_keypress) {
-            eff->on_keypress(ev.position);
+        /* Drain any pending keypress events */
+        struct effect_event ev;
+        while (k_msgq_get(&effect_event_msgq, &ev, K_NO_WAIT) == 0) {
+            if (eff->on_keypress) {
+                eff->on_keypress(ev.position);
+            }
+        }
+
+        /* Run current effect renderer */
+        eff->render();
+
+        /* Convert float pixels to LED strip format */
+        for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
+            rgb_float_to_led(&fx_pixels[i], &pixels[i]);
+        }
+
+#if IS_ENABLED(UNDERGLOW_LAYER_ENABLED)
+        zmk_rgb_underglow_apply_layer_overlay();
+#endif
+        zmk_rgb_underglow_apply_status_overlay(rgb_underglow_top_layer());
+    } else {
+        for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
+            pixels[i] = (struct led_rgb){.r = 0, .g = 0, .b = 0};
         }
     }
 
-    /* Run current effect renderer */
-    eff->render();
-
-    /* Convert float pixels to LED strip format */
-    for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
-        rgb_float_to_led(&fx_pixels[i], &pixels[i]);
-    }
-
-#if IS_ENABLED(UNDERGLOW_LAYER_ENABLED)
-    zmk_rgb_underglow_apply_layer_overlay();
+#if FIXED_BREATHE_OVERLAY_ENABLED
+    zmk_rgb_underglow_apply_fixed_breathe_overlay();
 #endif
-    zmk_rgb_underglow_apply_status_overlay(rgb_underglow_top_layer());
 
     int err = led_strip_update_rgb(led_strip, pixels, STRIP_NUM_PIXELS);
     if (err < 0) {
@@ -653,7 +721,7 @@ static void zmk_rgb_underglow_tick(struct k_work *work) {
 K_WORK_DEFINE(underglow_tick_work, zmk_rgb_underglow_tick);
 
 static void zmk_rgb_underglow_tick_handler(struct k_timer *timer) {
-    if (!state.on) {
+    if (!underglow_output_required()) {
         return;
     }
     k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &underglow_tick_work);
@@ -797,7 +865,15 @@ static int zmk_rgb_underglow_init(void) {
             effect_table[i].reset();
     }
 
-    if (state.on) {
+    if (underglow_output_required()) {
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_EXT_POWER)
+        if (ext_power != NULL) {
+            int rc = ext_power_enable(ext_power);
+            if (rc != 0) {
+                LOG_ERR("Unable to enable EXT_POWER: %d", rc);
+            }
+        }
+#endif
         k_timer_start(&underglow_tick, K_NO_WAIT, K_MSEC(1000 / ANIMATION_FPS));
     }
     return 0;
@@ -870,6 +946,15 @@ int zmk_rgb_underglow_transient_off(void) {
     if (!led_strip)
         return -ENODEV;
 
+    state.on = false;
+    if (underglow_output_required()) {
+        k_timer_start(&underglow_tick, K_NO_WAIT, K_MSEC(1000 / ANIMATION_FPS));
+        k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &underglow_tick_work);
+        return 0;
+    }
+
+    k_timer_stop(&underglow_tick);
+
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_EXT_POWER)
     if (ext_power != NULL) {
         int rc = ext_power_disable(ext_power);
@@ -879,8 +964,6 @@ int zmk_rgb_underglow_transient_off(void) {
     }
 #endif
 
-    state.on = false;
-    k_timer_stop(&underglow_tick);
     k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &underglow_off_work);
 
     return 0;
