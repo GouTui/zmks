@@ -26,6 +26,7 @@ target_include_directories(app PRIVATE include)
 target_sources(app PRIVATE src/stdlib.c)
 target_sources(app PRIVATE src/activity.c)
 target_sources(app PRIVATE src/behavior.c)
+target_sources(app PRIVATE src/power_runtime.c)
 target_sources_ifdef(CONFIG_ZMK_KSCAN_SIDEBAND_BEHAVIORS app PRIVATE src/kscan_sideband_behaviors.c)
 target_sources(app PRIVATE src/matrix_transform.c)
 target_sources(app PRIVATE src/physical_layouts.c)
@@ -129,16 +130,24 @@ if (CONFIG_ZMK_STUDIO_RPC)
 
   include(nanopb)
 
-    # Turn off the default nanopb behavior
+  if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/studio-proto/zmk/studio.proto)
+    set(ZMK_STUDIO_PROTO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/studio-proto/zmk)
+    set(ZMK_STUDIO_PROTO_RELPATH ${CMAKE_CURRENT_SOURCE_DIR}/studio-proto)
+  else()
+    set(ZMK_STUDIO_PROTO_DIR ${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR}/proto/zmk)
+    set(ZMK_STUDIO_PROTO_RELPATH ${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR})
+  endif()
+
+  # Turn off the default nanopb behavior
   set(NANOPB_GENERATE_CPP_STANDALONE OFF)
 
-  nanopb_generate_cpp(proto_srcs proto_hdrs RELPATH ${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR}
-                        ${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR}/proto/zmk/studio.proto
-                        ${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR}/proto/zmk/meta.proto
-                        ${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR}/proto/zmk/core.proto
-                        ${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR}/proto/zmk/behaviors.proto
-                        ${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR}/proto/zmk/keymap.proto
-                        ${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR}/proto/zmk/lighting.proto
+  nanopb_generate_cpp(proto_srcs proto_hdrs RELPATH ${ZMK_STUDIO_PROTO_RELPATH}
+                        ${ZMK_STUDIO_PROTO_DIR}/studio.proto
+                        ${ZMK_STUDIO_PROTO_DIR}/meta.proto
+                        ${ZMK_STUDIO_PROTO_DIR}/core.proto
+                        ${ZMK_STUDIO_PROTO_DIR}/behaviors.proto
+                        ${ZMK_STUDIO_PROTO_DIR}/keymap.proto
+                        ${ZMK_STUDIO_PROTO_DIR}/lighting.proto
   )
 
   target_include_directories(app PUBLIC ${CMAKE_CURRENT_BINARY_DIR})

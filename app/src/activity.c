@@ -22,6 +22,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/pm.h>
 
 #include <zmk/activity.h>
+#include <zmk/power_runtime.h>
 
 #if IS_ENABLED(CONFIG_USB_DEVICE_STACK)
 #include <zmk/usb.h>
@@ -42,12 +43,6 @@ bool is_usb_power_present(void) {
 static enum zmk_activity_state activity_state;
 
 static uint32_t activity_last_uptime;
-
-#define MAX_IDLE_MS CONFIG_ZMK_IDLE_TIMEOUT
-
-#if IS_ENABLED(CONFIG_ZMK_SLEEP)
-#define MAX_SLEEP_MS CONFIG_ZMK_IDLE_SLEEP_TIMEOUT
-#endif
 
 int raise_event(void) {
     return raise_zmk_activity_state_changed(
@@ -75,8 +70,10 @@ static int activity_event_listener(const zmk_event_t *eh) { return note_activity
 void activity_work_handler(struct k_work *work) {
     int32_t current = k_uptime_get();
     int32_t inactive_time = current - activity_last_uptime;
+    uint32_t idle_timeout_ms = zmk_power_runtime_get_idle_timeout_ms();
 #if IS_ENABLED(CONFIG_ZMK_SLEEP)
-    if (inactive_time > MAX_SLEEP_MS && !is_usb_power_present()) {
+    uint32_t sleep_timeout_ms = zmk_power_runtime_get_sleep_timeout_ms();
+    if (sleep_timeout_ms > 0 && inactive_time > sleep_timeout_ms && !is_usb_power_present()) {
         // Put devices in suspend power mode before sleeping
         set_state(ZMK_ACTIVITY_SLEEP);
 
@@ -89,7 +86,7 @@ void activity_work_handler(struct k_work *work) {
         sys_poweroff();
     } else
 #endif /* IS_ENABLED(CONFIG_ZMK_SLEEP) */
-        if (inactive_time > MAX_IDLE_MS) {
+        if (idle_timeout_ms > 0 && inactive_time > idle_timeout_ms) {
 #if IS_ENABLED(CONFIG_ZMK_IDLE_SKIP_ON_USB_POWER)
             if (!is_usb_power_present()) {
                 set_state(ZMK_ACTIVITY_IDLE);

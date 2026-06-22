@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <string.h>
+#include <zephyr/sys/util.h>
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
@@ -131,6 +133,57 @@ static zmk_studio_Response set_rgb_underglow_state(const zmk_studio_Request *req
 ZMK_RPC_SUBSYSTEM_HANDLER(lighting, get_rgb_underglow_state, ZMK_STUDIO_RPC_HANDLER_UNSECURED);
 ZMK_RPC_SUBSYSTEM_HANDLER(lighting, set_rgb_underglow_state, ZMK_STUDIO_RPC_HANDLER_SECURED);
 
+static zmk_studio_Response get_low_battery_indicator(const zmk_studio_Request *req) {
+    LOG_DBG("");
+
+    struct zmk_rgb_low_battery_indicator_state state;
+    if (zmk_rgb_low_battery_indicator_get_state(&state) < 0) {
+        return ZMK_RPC_SIMPLE_ERR(GENERIC);
+    }
+
+    zmk_lighting_LowBatteryIndicatorState resp = zmk_lighting_LowBatteryIndicatorState_init_zero;
+    resp.enabled = state.enabled;
+    resp.color = state.color;
+    resp.key_position = state.key_pos;
+    resp.period_ms = state.period_ms;
+    resp.threshold_pct = state.threshold_pct;
+    resp.flash_duration_ms = state.flash_duration_ms;
+
+    return LIGHTING_RESPONSE(get_low_battery_indicator, resp);
+}
+
+static zmk_studio_Response set_low_battery_indicator(const zmk_studio_Request *req) {
+    LOG_DBG("");
+
+    const zmk_lighting_SetLowBatteryIndicatorRequest *set_req =
+        &req->subsystem.lighting.request_type.set_low_battery_indicator;
+    int ret = 0;
+
+    switch (set_req->which_field) {
+    case zmk_lighting_SetLowBatteryIndicatorRequest_enabled_tag:
+        ret = zmk_rgb_low_battery_indicator_set_enabled(set_req->field.enabled);
+        break;
+    case zmk_lighting_SetLowBatteryIndicatorRequest_key_position_tag:
+        ret = zmk_rgb_low_battery_indicator_set_key_pos((uint8_t)set_req->field.key_position);
+        break;
+    case zmk_lighting_SetLowBatteryIndicatorRequest_period_ms_tag:
+        ret = zmk_rgb_low_battery_indicator_set_period_ms(set_req->field.period_ms);
+        break;
+    default:
+        return ZMK_RPC_SIMPLE_ERR(GENERIC);
+    }
+
+    if (ret < 0) {
+        return LIGHTING_RESPONSE(set_low_battery_indicator, false);
+    }
+
+    ret = zmk_rgb_low_battery_indicator_save();
+    return LIGHTING_RESPONSE(set_low_battery_indicator, ret == 0);
+}
+
+ZMK_RPC_SUBSYSTEM_HANDLER(lighting, get_low_battery_indicator, ZMK_STUDIO_RPC_HANDLER_UNSECURED);
+ZMK_RPC_SUBSYSTEM_HANDLER(lighting, set_low_battery_indicator, ZMK_STUDIO_RPC_HANDLER_SECURED);
+
 #endif /* CONFIG_ZMK_RGB_UNDERGLOW */
 
 #if IS_ENABLED(CONFIG_ZMK_BACKLIGHT)
@@ -180,6 +233,12 @@ static zmk_studio_Response save_state(const zmk_studio_Request *req) {
     int ret = zmk_rgb_underglow_save_state();
     if (ret < 0) {
         LOG_ERR("Failed to save RGB underglow state: %d", ret);
+        return LIGHTING_RESPONSE(save_state, false);
+    }
+
+    ret = zmk_rgb_low_battery_indicator_save();
+    if (ret < 0) {
+        LOG_ERR("Failed to save low battery indicator state: %d", ret);
         return LIGHTING_RESPONSE(save_state, false);
     }
 #endif
@@ -424,6 +483,11 @@ static int lighting_settings_reset(void) {
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
     int ret = settings_delete("rgb/underglow/state");
     if (ret < 0 && ret != -ENOENT) {
+        return ret;
+    }
+
+    ret = zmk_rgb_low_battery_indicator_settings_reset();
+    if (ret < 0) {
         return ret;
     }
 #endif

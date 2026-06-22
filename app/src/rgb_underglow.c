@@ -28,12 +28,14 @@
 #include <zmk/rgb_underglow_layer.h>
 
 #include <zmk/activity.h>
+#include <zmk/battery.h>
 #include <zmk/behavior.h>
 #include <zmk/matrix.h>
 #include <zmk/hid_indicators.h>
 #include <zmk/usb.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/activity_state_changed.h>
+#include <zmk/events/battery_state_changed.h>
 #include <zmk/events/usb_conn_state_changed.h>
 #include <zmk/events/underglow_color_changed.h>
 #include <zmk/events/layer_state_changed.h>
@@ -54,35 +56,6 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define UNDERGLOW_LAYER_ENABLED 1
 #endif
 
-#if DT_HAS_COMPAT_STATUS_OKAY(zmk_underglow_fixed_breathe_key)
-#define FIXED_BREATHE_OVERLAY_ENABLED 1
-#define FIXED_BREATHE_NODE DT_INST(0, zmk_underglow_fixed_breathe_key)
-#define FIXED_BREATHE_KEY_POS DT_PROP(FIXED_BREATHE_NODE, key_pos)
-#if DT_NODE_HAS_PROP(FIXED_BREATHE_NODE, led_index)
-#define FIXED_BREATHE_HAS_LED_INDEX 1
-#define FIXED_BREATHE_LED_INDEX DT_PROP(FIXED_BREATHE_NODE, led_index)
-#else
-#define FIXED_BREATHE_HAS_LED_INDEX 0
-#endif
-#define FIXED_BREATHE_COLOR DT_PROP(FIXED_BREATHE_NODE, color)
-#define FIXED_BREATHE_PERIOD_MS DT_PROP(FIXED_BREATHE_NODE, period_ms)
-#define FIXED_BREATHE_MIN_BRIGHTNESS DT_PROP(FIXED_BREATHE_NODE, min_brightness)
-#define FIXED_BREATHE_MAX_BRIGHTNESS DT_PROP(FIXED_BREATHE_NODE, max_brightness)
-
-BUILD_ASSERT(FIXED_BREATHE_PERIOD_MS > 0,
-             "zmk,underglow-fixed-breathe-key period-ms must be greater than 0");
-BUILD_ASSERT(FIXED_BREATHE_MIN_BRIGHTNESS <= FIXED_BREATHE_MAX_BRIGHTNESS,
-             "zmk,underglow-fixed-breathe-key min-brightness must not exceed max-brightness");
-BUILD_ASSERT(FIXED_BREATHE_MAX_BRIGHTNESS <= 255,
-             "zmk,underglow-fixed-breathe-key max-brightness must be <= 255");
-#if FIXED_BREATHE_HAS_LED_INDEX
-BUILD_ASSERT(FIXED_BREATHE_LED_INDEX >= 0 && FIXED_BREATHE_LED_INDEX < STRIP_NUM_PIXELS,
-             "zmk,underglow-fixed-breathe-key led-index must be within the LED strip length");
-#endif
-#else
-#define FIXED_BREATHE_OVERLAY_ENABLED 0
-#endif
-
 static inline int effect_pixel_lookup(int led_idx) {
 #if IS_ENABLED(UNDERGLOW_LAYER_ENABLED)
     return rgb_pixel_lookup(led_idx);
@@ -95,6 +68,11 @@ static inline int effect_pixel_lookup(int led_idx) {
 #define SAT_MAX 100
 #define BRT_MAX 100
 #define RGB_CHANNEL_STEP 16
+#define LOW_BATTERY_INDICATOR_DEFAULT_COLOR 0xFF0000
+#define LOW_BATTERY_INDICATOR_DEFAULT_KEY_POS 0
+#define LOW_BATTERY_INDICATOR_DEFAULT_PERIOD_MS 5000
+#define LOW_BATTERY_INDICATOR_DEFAULT_THRESHOLD_PCT 20
+#define LOW_BATTERY_INDICATOR_DEFAULT_FLASH_DURATION_MS 200
 
 /* Animation FPS */
 #define ANIMATION_FPS 60
@@ -346,13 +324,25 @@ static struct led_rgb pixels[STRIP_NUM_PIXELS];
 static struct color_rgb_float fx_pixels[STRIP_NUM_PIXELS];
 
 static struct rgb_underglow_state state;
+static struct zmk_rgb_low_battery_indicator_state low_battery_indicator = {
+    .enabled = true,
+    .color = LOW_BATTERY_INDICATOR_DEFAULT_COLOR,
+    .key_pos = LOW_BATTERY_INDICATOR_DEFAULT_KEY_POS,
+    .period_ms = LOW_BATTERY_INDICATOR_DEFAULT_PERIOD_MS,
+    .threshold_pct = LOW_BATTERY_INDICATOR_DEFAULT_THRESHOLD_PCT,
+    .flash_duration_ms = LOW_BATTERY_INDICATOR_DEFAULT_FLASH_DURATION_MS,
+};
+static bool low_battery_state_known;
 
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_EXT_POWER)
 static const struct device *const ext_power = DEVICE_DT_GET(DT_INST(0, zmk_ext_power_generic));
 #endif
 
+static bool low_battery_overlay_requested(void);
+static void zmk_rgb_underglow_sync_output_state(bool refresh_now);
+
 static inline bool underglow_output_required(void) {
-    return state.on || FIXED_BREATHE_OVERLAY_ENABLED;
+    return state.on || low_battery_overlay_requested();
 }
 
 /* Get the brightness factor from user state (0.0 ~ 1.0) */
@@ -616,55 +606,47 @@ static struct led_rgb hex_to_rgb_overlay(uint8_t r, uint8_t g, uint8_t b) {
 
 static int find_led_for_key_pos(uint8_t key_pos) {
     for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
-        if ((uint8_t)rgb_pixel_lookup(i) == key_pos) {
+        if ((uint8_t)effect_pixel_lookup(i) == key_pos) {
             return i;
         }
     }
     return -1;
 }
 
-#if FIXED_BREATHE_OVERLAY_ENABLED
-static int fixed_breathe_led_index(void) {
-#if FIXED_BREATHE_HAS_LED_INDEX
-    return FIXED_BREATHE_LED_INDEX;
-#else
-    return find_led_for_key_pos(FIXED_BREATHE_KEY_POS);
-#endif
+static struct led_rgb solid_rgb_overlay(uint32_t color) {
+    return (struct led_rgb){
+        .r = (color >> 16) & 0xFF,
+        .g = (color >> 8) & 0xFF,
+        .b = color & 0xFF,
+    };
 }
 
-static float fixed_breathe_pulse(float phase_01) {
-    float x = phase_01 * 2.0f;
-    if (x > 1.0f) {
-        x = 2.0f - x;
+static bool low_battery_overlay_requested(void) {
+    return low_battery_indicator.enabled && low_battery_state_known &&
+           zmk_battery_state_of_charge() <= low_battery_indicator.threshold_pct;
+}
+
+static bool low_battery_flash_visible(void) {
+    if (!low_battery_overlay_requested() || low_battery_indicator.period_ms == 0) {
+        return false;
     }
-    return 4.0f * x * (1.0f - x);
+
+    uint32_t flash_duration =
+        MIN((uint32_t)low_battery_indicator.flash_duration_ms, low_battery_indicator.period_ms);
+    uint32_t phase_ms = k_uptime_get_32() % low_battery_indicator.period_ms;
+    return phase_ms < flash_duration;
 }
 
-static void zmk_rgb_underglow_apply_fixed_breathe_overlay(void) {
-    int led_idx = fixed_breathe_led_index();
-    if (led_idx < 0) {
+static void zmk_rgb_underglow_apply_low_battery_overlay(void) {
+    if (!low_battery_flash_visible()) {
         return;
     }
 
-    uint32_t phase_ms = k_uptime_get_32() % FIXED_BREATHE_PERIOD_MS;
-    float phase = (float)phase_ms / (float)FIXED_BREATHE_PERIOD_MS;
-    float pulse = fixed_breathe_pulse(phase);
-    float brightness =
-        (float)FIXED_BREATHE_MIN_BRIGHTNESS +
-        ((float)(FIXED_BREATHE_MAX_BRIGHTNESS - FIXED_BREATHE_MIN_BRIGHTNESS) * pulse);
-
-    uint8_t scale = (uint8_t)(brightness + 0.5f);
-    uint8_t base_r = (FIXED_BREATHE_COLOR >> 16) & 0xFF;
-    uint8_t base_g = (FIXED_BREATHE_COLOR >> 8) & 0xFF;
-    uint8_t base_b = FIXED_BREATHE_COLOR & 0xFF;
-
-    pixels[led_idx] = (struct led_rgb){
-        .r = (uint8_t)(((uint16_t)base_r * scale) / 255),
-        .g = (uint8_t)(((uint16_t)base_g * scale) / 255),
-        .b = (uint8_t)(((uint16_t)base_b * scale) / 255),
-    };
+    int led_idx = find_led_for_key_pos(low_battery_indicator.key_pos);
+    if (led_idx >= 0) {
+        pixels[led_idx] = solid_rgb_overlay(low_battery_indicator.color);
+    }
 }
-#endif
 
 static void zmk_rgb_underglow_apply_status_overlay(uint8_t top_layer) {
     uint8_t key_pos;
@@ -761,9 +743,7 @@ static void zmk_rgb_underglow_tick(struct k_work *work) {
         }
     }
 
-#if FIXED_BREATHE_OVERLAY_ENABLED
-    zmk_rgb_underglow_apply_fixed_breathe_overlay();
-#endif
+    zmk_rgb_underglow_apply_low_battery_overlay();
 
     int err = led_strip_update_rgb(led_strip, pixels, STRIP_NUM_PIXELS);
     if (err < 0) {
@@ -821,6 +801,49 @@ static void zmk_rgb_underglow_save_state_work(struct k_work *_work) {
 }
 
 static struct k_work_delayable underglow_save_work;
+
+struct low_battery_indicator_settings_data {
+    bool enabled;
+    uint32_t color;
+    uint8_t key_pos;
+    uint32_t period_ms;
+    uint8_t threshold_pct;
+    uint16_t flash_duration_ms;
+} __packed;
+
+static int low_battery_indicator_settings_set(const char *name, size_t len, settings_read_cb read_cb,
+                                              void *cb_arg) {
+    const char *next;
+
+    if (settings_name_steq(name, "state", &next) && !next) {
+        struct low_battery_indicator_settings_data data = {0};
+        if (len != sizeof(data)) {
+            return -EINVAL;
+        }
+
+        int rc = read_cb(cb_arg, &data, sizeof(data));
+        if (rc < 0) {
+            return rc;
+        }
+
+        low_battery_indicator.enabled = data.enabled;
+        low_battery_indicator.color = data.color ? data.color : LOW_BATTERY_INDICATOR_DEFAULT_COLOR;
+        low_battery_indicator.key_pos = data.key_pos;
+        low_battery_indicator.period_ms =
+            data.period_ms ? data.period_ms : LOW_BATTERY_INDICATOR_DEFAULT_PERIOD_MS;
+        low_battery_indicator.threshold_pct =
+            data.threshold_pct ? data.threshold_pct : LOW_BATTERY_INDICATOR_DEFAULT_THRESHOLD_PCT;
+        low_battery_indicator.flash_duration_ms =
+            data.flash_duration_ms ? data.flash_duration_ms
+                                   : LOW_BATTERY_INDICATOR_DEFAULT_FLASH_DURATION_MS;
+        return 0;
+    }
+
+    return -ENOENT;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(rgb_low_battery, "rgb/low_battery", NULL,
+                               low_battery_indicator_settings_set, NULL, NULL);
 #endif
 
 /* ========================================================================= */
@@ -918,17 +941,7 @@ static int zmk_rgb_underglow_init(void) {
             effect_table[i].reset();
     }
 
-    if (underglow_output_required()) {
-#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_EXT_POWER)
-        if (ext_power != NULL) {
-            int rc = ext_power_enable(ext_power);
-            if (rc != 0) {
-                LOG_ERR("Unable to enable EXT_POWER: %d", rc);
-            }
-        }
-#endif
-        k_timer_start(&underglow_tick, K_NO_WAIT, K_MSEC(1000 / ANIMATION_FPS));
-    }
+    zmk_rgb_underglow_sync_output_state(false);
     return 0;
 }
 
@@ -943,6 +956,74 @@ int zmk_rgb_underglow_save_state(void) {
 #else
     return 0;
 #endif
+}
+
+int zmk_rgb_low_battery_indicator_get_state(struct zmk_rgb_low_battery_indicator_state *out_state) {
+    if (!out_state) {
+        return -EINVAL;
+    }
+
+    *out_state = low_battery_indicator;
+    return 0;
+}
+
+int zmk_rgb_low_battery_indicator_set_enabled(bool enabled) {
+    low_battery_indicator.enabled = enabled;
+    zmk_rgb_underglow_sync_output_state(true);
+    return 0;
+}
+
+int zmk_rgb_low_battery_indicator_set_key_pos(uint8_t key_pos) {
+    low_battery_indicator.key_pos = key_pos;
+    zmk_rgb_underglow_sync_output_state(true);
+    return 0;
+}
+
+int zmk_rgb_low_battery_indicator_set_period_ms(uint32_t period_ms) {
+    if (period_ms == 0) {
+        return -EINVAL;
+    }
+
+    low_battery_indicator.period_ms = period_ms;
+    zmk_rgb_underglow_sync_output_state(true);
+    return 0;
+}
+
+int zmk_rgb_low_battery_indicator_save(void) {
+#if IS_ENABLED(CONFIG_SETTINGS)
+    struct low_battery_indicator_settings_data data = {
+        .enabled = low_battery_indicator.enabled,
+        .color = low_battery_indicator.color,
+        .key_pos = low_battery_indicator.key_pos,
+        .period_ms = low_battery_indicator.period_ms,
+        .threshold_pct = low_battery_indicator.threshold_pct,
+        .flash_duration_ms = low_battery_indicator.flash_duration_ms,
+    };
+    return settings_save_one("rgb/low_battery/state", &data, sizeof(data));
+#else
+    return 0;
+#endif
+}
+
+int zmk_rgb_low_battery_indicator_settings_reset(void) {
+    low_battery_indicator = (struct zmk_rgb_low_battery_indicator_state){
+        .enabled = true,
+        .color = LOW_BATTERY_INDICATOR_DEFAULT_COLOR,
+        .key_pos = LOW_BATTERY_INDICATOR_DEFAULT_KEY_POS,
+        .period_ms = LOW_BATTERY_INDICATOR_DEFAULT_PERIOD_MS,
+        .threshold_pct = LOW_BATTERY_INDICATOR_DEFAULT_THRESHOLD_PCT,
+        .flash_duration_ms = LOW_BATTERY_INDICATOR_DEFAULT_FLASH_DURATION_MS,
+    };
+
+#if IS_ENABLED(CONFIG_SETTINGS)
+    int ret = settings_delete("rgb/low_battery/state");
+    if (ret < 0 && ret != -ENOENT) {
+        return ret;
+    }
+#endif
+
+    zmk_rgb_underglow_sync_output_state(true);
+    return 0;
 }
 
 int zmk_rgb_underglow_get_state(bool *on_off) {
@@ -961,15 +1042,6 @@ int zmk_rgb_underglow_transient_on(void) {
     if (!led_strip)
         return -ENODEV;
 
-#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_EXT_POWER)
-    if (ext_power != NULL) {
-        int rc = ext_power_enable(ext_power);
-        if (rc != 0) {
-            LOG_ERR("Unable to enable EXT_POWER: %d", rc);
-        }
-    }
-#endif
-
     state.on = true;
     state.animation_step = 0;
     /* Reset all effect state */
@@ -977,7 +1049,7 @@ int zmk_rgb_underglow_transient_on(void) {
         if (effect_table[i].reset)
             effect_table[i].reset();
     }
-    k_timer_start(&underglow_tick, K_NO_WAIT, K_MSEC(1000 / ANIMATION_FPS));
+    zmk_rgb_underglow_sync_output_state(true);
     return 0;
 }
 
@@ -990,20 +1062,25 @@ static void zmk_rgb_underglow_off_handler(struct k_work *work) {
 
 K_WORK_DEFINE(underglow_off_work, zmk_rgb_underglow_off_handler);
 
-int zmk_rgb_underglow_off(void) {
-    zmk_rgb_underglow_transient_off();
-    return zmk_rgb_underglow_save_state();
-}
+static void zmk_rgb_underglow_sync_output_state(bool refresh_now) {
+    if (!led_strip) {
+        return;
+    }
 
-int zmk_rgb_underglow_transient_off(void) {
-    if (!led_strip)
-        return -ENODEV;
-
-    state.on = false;
     if (underglow_output_required()) {
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_EXT_POWER)
+        if (ext_power != NULL) {
+            int rc = ext_power_enable(ext_power);
+            if (rc != 0) {
+                LOG_ERR("Unable to enable EXT_POWER: %d", rc);
+            }
+        }
+#endif
         k_timer_start(&underglow_tick, K_NO_WAIT, K_MSEC(1000 / ANIMATION_FPS));
-        k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &underglow_tick_work);
-        return 0;
+        if (refresh_now) {
+            k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &underglow_tick_work);
+        }
+        return;
     }
 
     k_timer_stop(&underglow_tick);
@@ -1018,7 +1095,19 @@ int zmk_rgb_underglow_transient_off(void) {
 #endif
 
     k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &underglow_off_work);
+}
 
+int zmk_rgb_underglow_off(void) {
+    zmk_rgb_underglow_transient_off();
+    return zmk_rgb_underglow_save_state();
+}
+
+int zmk_rgb_underglow_transient_off(void) {
+    if (!led_strip)
+        return -ENODEV;
+
+    state.on = false;
+    zmk_rgb_underglow_sync_output_state(true);
     return 0;
 }
 
@@ -1245,6 +1334,12 @@ static int rgb_underglow_event_listener(const zmk_event_t *eh) {
         return ZMK_EV_EVENT_BUBBLE;
     }
 
+    if (as_zmk_battery_state_changed(eh)) {
+        low_battery_state_known = true;
+        zmk_rgb_underglow_sync_output_state(true);
+        return ZMK_EV_EVENT_BUBBLE;
+    }
+
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_USB)
     if (as_zmk_usb_conn_state_changed(eh)) {
         auto_off_state.usb_wants_off = !zmk_usb_is_powered();
@@ -1269,5 +1364,6 @@ ZMK_SUBSCRIPTION(rgb_underglow, zmk_usb_conn_state_changed);
 
 /* Subscribe to key position events for key-interactive effects */
 ZMK_SUBSCRIPTION(rgb_underglow, zmk_position_state_changed);
+ZMK_SUBSCRIPTION(rgb_underglow, zmk_battery_state_changed);
 
 SYS_INIT(zmk_rgb_underglow_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);

@@ -6,10 +6,22 @@
 
 #pragma once
 
+#include <stdbool.h>
+#include <stdint.h>
+
 struct zmk_led_hsb {
     uint16_t h;
     uint8_t s;
     uint8_t b;
+};
+
+struct zmk_rgb_low_battery_indicator_state {
+    bool enabled;
+    uint32_t color;
+    uint8_t key_pos;
+    uint32_t period_ms;
+    uint8_t threshold_pct;
+    uint16_t flash_duration_ms;
 };
 
 int zmk_rgb_underglow_toggle(void);
@@ -38,3 +50,9 @@ int zmk_rgb_underglow_get_speed(void);
 int zmk_rgb_underglow_set_speed(int speed);
 int zmk_rgb_underglow_get_effect_count(void);
 int zmk_rgb_underglow_save_state(void);
+int zmk_rgb_low_battery_indicator_get_state(struct zmk_rgb_low_battery_indicator_state *out_state);
+int zmk_rgb_low_battery_indicator_set_enabled(bool enabled);
+int zmk_rgb_low_battery_indicator_set_key_pos(uint8_t key_pos);
+int zmk_rgb_low_battery_indicator_set_period_ms(uint32_t period_ms);
+int zmk_rgb_low_battery_indicator_save(void);
+int zmk_rgb_low_battery_indicator_settings_reset(void);

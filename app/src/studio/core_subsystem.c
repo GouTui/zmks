@@ -6,9 +6,11 @@
 
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/logging/log.h>
+#include <string.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <pb_encode.h>
+#include <zmk/power_runtime.h>
 #include <zmk/studio/core.h>
 #include <zmk/studio/rpc.h>
 
@@ -76,9 +78,52 @@ zmk_studio_Response reset_settings(const zmk_studio_Request *req) {
     return CORE_RESPONSE(reset_settings, true);
 }
 
+zmk_studio_Response get_power_settings(const zmk_studio_Request *req) {
+    LOG_DBG("");
+
+    struct zmk_power_runtime_state runtime_state;
+    if (zmk_power_runtime_get_state(&runtime_state) < 0) {
+        return ZMK_RPC_SIMPLE_ERR(GENERIC);
+    }
+
+    zmk_core_PowerSettingsState resp = zmk_core_PowerSettingsState_init_zero;
+    resp.idle_timeout_ms = runtime_state.idle_timeout_ms;
+    resp.sleep_timeout_ms = runtime_state.sleep_timeout_ms;
+
+    return CORE_RESPONSE(get_power_settings, resp);
+}
+
+zmk_studio_Response set_power_settings(const zmk_studio_Request *req) {
+    LOG_DBG("");
+
+    const zmk_core_SetPowerSettingsRequest *set_req =
+        &req->subsystem.core.request_type.set_power_settings;
+    int ret = 0;
+
+    switch (set_req->which_field) {
+    case zmk_core_SetPowerSettingsRequest_idle_timeout_ms_tag:
+        ret = zmk_power_runtime_set_idle_timeout_ms(set_req->field.idle_timeout_ms);
+        break;
+    case zmk_core_SetPowerSettingsRequest_sleep_timeout_ms_tag:
+        ret = zmk_power_runtime_set_sleep_timeout_ms(set_req->field.sleep_timeout_ms);
+        break;
+    default:
+        return ZMK_RPC_SIMPLE_ERR(GENERIC);
+    }
+
+    if (ret < 0) {
+        return CORE_RESPONSE(set_power_settings, false);
+    }
+
+    ret = zmk_power_runtime_save_state();
+    return CORE_RESPONSE(set_power_settings, ret == 0);
+}
+
 ZMK_RPC_SUBSYSTEM_HANDLER(core, get_device_info, ZMK_STUDIO_RPC_HANDLER_UNSECURED);
 ZMK_RPC_SUBSYSTEM_HANDLER(core, get_lock_state, ZMK_STUDIO_RPC_HANDLER_UNSECURED);
 ZMK_RPC_SUBSYSTEM_HANDLER(core, reset_settings, ZMK_STUDIO_RPC_HANDLER_SECURED);
+ZMK_RPC_SUBSYSTEM_HANDLER(core, get_power_settings, ZMK_STUDIO_RPC_HANDLER_UNSECURED);
+ZMK_RPC_SUBSYSTEM_HANDLER(core, set_power_settings, ZMK_STUDIO_RPC_HANDLER_SECURED);
 
 static int core_event_mapper(const zmk_event_t *eh, zmk_studio_Notification *n) {
     struct zmk_studio_core_lock_state_changed *lock_ev = as_zmk_studio_core_lock_state_changed(eh);
@@ -94,3 +139,7 @@ static int core_event_mapper(const zmk_event_t *eh, zmk_studio_Notification *n) 
 }
 
 ZMK_RPC_EVENT_MAPPER(core, core_event_mapper, zmk_studio_core_lock_state_changed);
+
+static int core_settings_reset(void) { return zmk_power_runtime_settings_reset(); }
+
+ZMK_RPC_SUBSYSTEM_SETTINGS_RESET(core, core_settings_reset);
