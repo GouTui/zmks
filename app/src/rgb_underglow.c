@@ -57,6 +57,12 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define FIXED_BREATHE_OVERLAY_ENABLED 1
 #define FIXED_BREATHE_NODE DT_INST(0, zmk_underglow_fixed_breathe_key)
 #define FIXED_BREATHE_KEY_POS DT_PROP(FIXED_BREATHE_NODE, key_pos)
+#if DT_NODE_HAS_PROP(FIXED_BREATHE_NODE, led_index)
+#define FIXED_BREATHE_HAS_LED_INDEX 1
+#define FIXED_BREATHE_LED_INDEX DT_PROP(FIXED_BREATHE_NODE, led_index)
+#else
+#define FIXED_BREATHE_HAS_LED_INDEX 0
+#endif
 #define FIXED_BREATHE_COLOR DT_PROP(FIXED_BREATHE_NODE, color)
 #define FIXED_BREATHE_PERIOD_MS DT_PROP(FIXED_BREATHE_NODE, period_ms)
 #define FIXED_BREATHE_MIN_BRIGHTNESS DT_PROP(FIXED_BREATHE_NODE, min_brightness)
@@ -68,6 +74,10 @@ BUILD_ASSERT(FIXED_BREATHE_MIN_BRIGHTNESS <= FIXED_BREATHE_MAX_BRIGHTNESS,
              "zmk,underglow-fixed-breathe-key min-brightness must not exceed max-brightness");
 BUILD_ASSERT(FIXED_BREATHE_MAX_BRIGHTNESS <= 255,
              "zmk,underglow-fixed-breathe-key max-brightness must be <= 255");
+#if FIXED_BREATHE_HAS_LED_INDEX
+BUILD_ASSERT(FIXED_BREATHE_LED_INDEX >= 0 && FIXED_BREATHE_LED_INDEX < STRIP_NUM_PIXELS,
+             "zmk,underglow-fixed-breathe-key led-index must be within the LED strip length");
+#endif
 #else
 #define FIXED_BREATHE_OVERLAY_ENABLED 0
 #endif
@@ -579,6 +589,14 @@ static int find_led_for_key_pos(uint8_t key_pos) {
 }
 
 #if FIXED_BREATHE_OVERLAY_ENABLED
+static int fixed_breathe_led_index(void) {
+#if FIXED_BREATHE_HAS_LED_INDEX
+    return FIXED_BREATHE_LED_INDEX;
+#else
+    return find_led_for_key_pos(FIXED_BREATHE_KEY_POS);
+#endif
+}
+
 static float fixed_breathe_pulse(float phase_01) {
     float x = phase_01 * 2.0f;
     if (x > 1.0f) {
@@ -588,7 +606,7 @@ static float fixed_breathe_pulse(float phase_01) {
 }
 
 static void zmk_rgb_underglow_apply_fixed_breathe_overlay(void) {
-    int led_idx = find_led_for_key_pos(FIXED_BREATHE_KEY_POS);
+    int led_idx = fixed_breathe_led_index();
     if (led_idx < 0) {
         return;
     }

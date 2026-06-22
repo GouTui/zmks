@@ -12,6 +12,13 @@ properties:
     description: |
       Logical key position to target.
 
+  led-index:
+    type: int
+    required: false
+    description: |
+      Optional physical LED strip index. When present, it is used directly
+      instead of resolving the key position through the RGB transform.
+
   color:
     type: int
     required: false
