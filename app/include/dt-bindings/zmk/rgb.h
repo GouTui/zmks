@@ -25,6 +25,7 @@
 #define RGB_GD_CMD 18
 #define RGB_BI_CMD 19
 #define RGB_BD_CMD 20
+#define RGB_BAT_CMD 21
 
 #define RGB_TOG RGB_TOG_CMD 0
 #define RGB_ON RGB_ON_CMD 0
@@ -45,6 +46,7 @@
 #define RGB_GD RGB_GD_CMD 0
 #define RGB_BI RGB_BI_CMD 0
 #define RGB_BD RGB_BD_CMD 0
+#define RGB_BAT RGB_BAT_CMD 0
 #define RGB_COLOR_HSB_VAL(h, s, v) (((h) << 16) + ((s) << 8) + (v))
 #define RGB_COLOR_HSB(h, s, v) RGB_COLOR_HSB_CMD##(RGB_COLOR_HSB_VAL(h, s, v))
 #define RGB_COLOR_HSV RGB_COLOR_HSB

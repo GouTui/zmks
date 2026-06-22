@@ -116,6 +116,11 @@ static const struct behavior_parameter_value_metadata no_arg_values[] = {
         .type = BEHAVIOR_PARAMETER_VALUE_TYPE_VALUE,
         .value = RGB_BD_CMD,
     },
+    {
+        .display_name = "Show Battery Level",
+        .type = BEHAVIOR_PARAMETER_VALUE_TYPE_VALUE,
+        .value = RGB_BAT_CMD,
+    },
 };
 
 static const struct behavior_parameter_metadata_set no_args_set = {
@@ -315,6 +320,8 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
         return zmk_rgb_underglow_change_rgb_channel(2, 1);
     case RGB_BD_CMD:
         return zmk_rgb_underglow_change_rgb_channel(2, -1);
+    case RGB_BAT_CMD:
+        return zmk_rgb_underglow_show_battery_level();
     case RGB_EFS_CMD:
         return zmk_rgb_underglow_select_effect(binding->param2);
     case RGB_EFF_CMD:

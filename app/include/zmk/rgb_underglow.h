@@ -44,6 +44,7 @@ int zmk_rgb_underglow_change_spd(int direction);
 struct zmk_led_hsb zmk_rgb_underglow_calc_rgb_channel(int channel, int direction);
 int zmk_rgb_underglow_change_rgb_channel(int channel, int direction);
 int zmk_rgb_underglow_set_hsb(struct zmk_led_hsb color);
+int zmk_rgb_underglow_show_battery_level(void);
 
 struct zmk_led_hsb zmk_rgb_underglow_get_hsb(void);
 int zmk_rgb_underglow_get_effect(void);

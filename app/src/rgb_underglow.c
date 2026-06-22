@@ -73,6 +73,8 @@ static inline int effect_pixel_lookup(int led_idx) {
 #define LOW_BATTERY_INDICATOR_DEFAULT_PERIOD_MS 5000
 #define LOW_BATTERY_INDICATOR_DEFAULT_THRESHOLD_PCT 20
 #define LOW_BATTERY_INDICATOR_DEFAULT_FLASH_DURATION_MS 200
+#define BATTERY_LEVEL_DISPLAY_DEFAULT_DURATION_MS 1200
+#define BATTERY_LEVEL_DISPLAY_ZERO_KEY_POS 10
 
 /* Animation FPS */
 #define ANIMATION_FPS 60
@@ -333,6 +335,21 @@ static struct zmk_rgb_low_battery_indicator_state low_battery_indicator = {
     .flash_duration_ms = LOW_BATTERY_INDICATOR_DEFAULT_FLASH_DURATION_MS,
     .demo_enabled = false,
 };
+static struct {
+    bool active;
+    uint8_t key_pos;
+    uint8_t percent;
+    uint32_t color;
+    uint32_t started_at_ms;
+    uint16_t duration_ms;
+} battery_level_display = {
+    .active = false,
+    .key_pos = BATTERY_LEVEL_DISPLAY_ZERO_KEY_POS,
+    .percent = 0,
+    .color = 0,
+    .started_at_ms = 0,
+    .duration_ms = BATTERY_LEVEL_DISPLAY_DEFAULT_DURATION_MS,
+};
 static bool low_battery_state_known;
 
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_EXT_POWER)
@@ -340,10 +357,11 @@ static const struct device *const ext_power = DEVICE_DT_GET(DT_INST(0, zmk_ext_p
 #endif
 
 static bool low_battery_overlay_requested(void);
+static bool battery_level_display_requested(void);
 static void zmk_rgb_underglow_sync_output_state(bool refresh_now);
 
 static inline bool underglow_output_required(void) {
-    return state.on || low_battery_overlay_requested();
+    return state.on || low_battery_overlay_requested() || battery_level_display_requested();
 }
 
 /* Get the brightness factor from user state (0.0 ~ 1.0) */
@@ -622,6 +640,34 @@ static struct led_rgb solid_rgb_overlay(uint32_t color) {
     };
 }
 
+static struct led_rgb solid_rgb_overlay_scaled(uint32_t color, float scale) {
+    if (scale < 0.0f) {
+        scale = 0.0f;
+    } else if (scale > 1.0f) {
+        scale = 1.0f;
+    }
+
+    return (struct led_rgb){
+        .r = (uint8_t)lroundf(((color >> 16) & 0xFF) * scale),
+        .g = (uint8_t)lroundf(((color >> 8) & 0xFF) * scale),
+        .b = (uint8_t)lroundf((color & 0xFF) * scale),
+    };
+}
+
+static uint8_t battery_level_display_key_pos_for_pct(uint8_t pct) {
+    uint8_t rounded_tens = MIN((uint8_t)((pct + 5) / 10), (uint8_t)10);
+
+    return rounded_tens == 0 ? BATTERY_LEVEL_DISPLAY_ZERO_KEY_POS : rounded_tens;
+}
+
+static uint32_t battery_level_display_color_for_pct(uint8_t pct) {
+    uint8_t clamped = MIN(pct, (uint8_t)100);
+    uint8_t red = (uint8_t)(((100 - clamped) * 255 + 50) / 100);
+    uint8_t green = (uint8_t)((clamped * 255 + 50) / 100);
+
+    return ((uint32_t)red << 16) | ((uint32_t)green << 8);
+}
+
 static bool low_battery_overlay_requested(void) {
     if (!low_battery_indicator.enabled) {
         return false;
@@ -645,6 +691,20 @@ static bool low_battery_flash_visible(void) {
     return phase_ms < flash_duration;
 }
 
+static bool battery_level_display_requested(void) {
+    if (!battery_level_display.active) {
+        return false;
+    }
+
+    if ((uint32_t)(k_uptime_get_32() - battery_level_display.started_at_ms) >=
+        battery_level_display.duration_ms) {
+        battery_level_display.active = false;
+        return false;
+    }
+
+    return true;
+}
+
 static void zmk_rgb_underglow_apply_low_battery_overlay(void) {
     if (!low_battery_flash_visible()) {
         return;
@@ -654,6 +714,22 @@ static void zmk_rgb_underglow_apply_low_battery_overlay(void) {
     if (led_idx >= 0) {
         pixels[led_idx] = solid_rgb_overlay(low_battery_indicator.color);
     }
+}
+
+static void zmk_rgb_underglow_apply_battery_level_overlay(void) {
+    if (!battery_level_display_requested()) {
+        return;
+    }
+
+    int led_idx = find_led_for_key_pos(battery_level_display.key_pos);
+    if (led_idx < 0) {
+        return;
+    }
+
+    uint32_t elapsed_ms = k_uptime_get_32() - battery_level_display.started_at_ms;
+    float fade = 1.0f - ((float)elapsed_ms / (float)battery_level_display.duration_ms);
+
+    pixels[led_idx] = solid_rgb_overlay_scaled(battery_level_display.color, fade * fade);
 }
 
 static void zmk_rgb_underglow_apply_status_overlay(uint8_t top_layer) {
@@ -752,6 +828,7 @@ static void zmk_rgb_underglow_tick(struct k_work *work) {
     }
 
     zmk_rgb_underglow_apply_low_battery_overlay();
+    zmk_rgb_underglow_apply_battery_level_overlay();
 
     int err = led_strip_update_rgb(led_strip, pixels, STRIP_NUM_PIXELS);
     if (err < 0) {
@@ -763,6 +840,7 @@ K_WORK_DEFINE(underglow_tick_work, zmk_rgb_underglow_tick);
 
 static void zmk_rgb_underglow_tick_handler(struct k_timer *timer) {
     if (!underglow_output_required()) {
+        zmk_rgb_underglow_sync_output_state(false);
         return;
     }
     k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &underglow_tick_work);
@@ -1099,6 +1177,24 @@ int zmk_rgb_underglow_get_state(bool *on_off) {
     if (!led_strip)
         return -ENODEV;
     *on_off = state.on;
+    return 0;
+}
+
+int zmk_rgb_underglow_show_battery_level(void) {
+    if (!led_strip) {
+        return -ENODEV;
+    }
+
+    uint8_t battery_pct = MIN(zmk_battery_state_of_charge(), (uint8_t)100);
+
+    battery_level_display.active = true;
+    battery_level_display.percent = battery_pct;
+    battery_level_display.key_pos = battery_level_display_key_pos_for_pct(battery_pct);
+    battery_level_display.color = battery_level_display_color_for_pct(battery_pct);
+    battery_level_display.started_at_ms = k_uptime_get_32();
+    battery_level_display.duration_ms = BATTERY_LEVEL_DISPLAY_DEFAULT_DURATION_MS;
+
+    zmk_rgb_underglow_sync_output_state(true);
     return 0;
 }
 
